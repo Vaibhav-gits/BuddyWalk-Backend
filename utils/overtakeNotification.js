@@ -1,5 +1,6 @@
 const db = require("../config/db");
 const { sendPushNotification } = require("./sendPushNotification");
+const { canSendNotification } = require("../helpers/notificationLog");
 
 const STEP_GAP_THRESHOLD = 200;
 const COOLDOWN_MINUTES = 30;
@@ -60,6 +61,8 @@ async function processOvertakeNotifications(groupId) {
     }
 
     if (!overtakeEvents.length) {
+      // detect leader change even if no overtake events
+      await detectAndNotifyLeaderChange(members, newRanked, groupId);
       await updateRanks(newRanked, groupId);
       return;
     }
@@ -95,7 +98,22 @@ async function processOvertakeNotifications(groupId) {
         body = `${events.length} members overtook you! Time to walk more.`;
       }
 
-      await sendPushNotification(userId, title, body);
+      // fetch device tokens for the user before sending
+      const tokensRes = await new Promise((resolve) => {
+        db.query(
+          `SELECT token FROM device_tokens WHERE user_id = ?`,
+          [userId],
+          (qErr, qRes) => {
+            if (qErr || !qRes) return resolve([]);
+            resolve(qRes.map((r) => r.token).filter(Boolean));
+          },
+        );
+      });
+
+      const tokens = [...new Set((tokensRes || []).filter(Boolean))];
+      if (tokens.length > 0) {
+        await sendPushNotification(tokens, title, body);
+      }
 
       await logNotification(userId, groupId, "overtake_received", events[0]);
     }
@@ -129,12 +147,93 @@ async function processOvertakeNotifications(groupId) {
         body = `You overtook ${events.length} members! Keep walking!`;
       }
 
-      await sendPushNotification(userId, title, body);
+      // fetch device tokens for the user before sending
+      const tokensRes = await new Promise((resolve) => {
+        db.query(
+          `SELECT token FROM device_tokens WHERE user_id = ?`,
+          [userId],
+          (qErr, qRes) => {
+            if (qErr || !qRes) return resolve([]);
+            resolve(qRes.map((r) => r.token).filter(Boolean));
+          },
+        );
+      });
+
+      const tokens = [...new Set((tokensRes || []).filter(Boolean))];
+      if (tokens.length > 0) {
+        await sendPushNotification(tokens, title, body);
+      }
     }
+
+    // detect leader change and notify members who opted in
+    await detectAndNotifyLeaderChange(members, newRanked, groupId);
 
     await updateRanks(newRanked, groupId);
   } catch (err) {
     console.error("processOvertakeNotifications error:", err?.message);
+  }
+}
+
+async function detectAndNotifyLeaderChange(oldMembers, newRanked, groupId) {
+  try {
+    const prevLeader = (oldMembers || []).find((m) => Number(m.previous_rank || 0) === 1);
+    const prevLeaderId = prevLeader ? prevLeader.user_id : null;
+    const newLeaderId = newRanked && newRanked.length ? newRanked[0].user_id : null;
+    if (!newLeaderId) return;
+    if (prevLeaderId && Number(prevLeaderId) === Number(newLeaderId)) return;
+
+    // fetch new leader name and group name
+    const meta = await new Promise((resolve) => {
+      db.query(
+        `SELECT u.name AS leader_name, g.name AS group_name FROM users u JOIN grp g WHERE u.id = ? AND g.id = ? LIMIT 1`,
+        [newLeaderId, groupId],
+        (mErr, mRes) => {
+          if (mErr || !mRes || !mRes.length) return resolve({ leader_name: 'Leader', group_name: 'the group' });
+          resolve({ leader_name: mRes[0].leader_name, group_name: mRes[0].group_name });
+        },
+      );
+    });
+
+    // fetch tokens for members who enabled leader-change notifications (or have no setting => default true)
+    const rows = await new Promise((resolve) => {
+      db.query(
+        `SELECT gm.user_id, gns.notify_leader_change, dt.token
+         FROM group_members gm
+         LEFT JOIN group_notification_settings gns ON gns.user_id = gm.user_id AND gns.group_id = gm.group_id
+         LEFT JOIN device_tokens dt ON dt.user_id = gm.user_id
+         WHERE gm.group_id = ?`,
+        [groupId],
+        (qErr, qRes) => {
+          if (qErr || !qRes) return resolve([]);
+          resolve(qRes);
+        },
+      );
+    });
+
+    const tokensByUser = new Map();
+    for (const r of rows) {
+      const enabled = r.notify_leader_change === null || Number(r.notify_leader_change) === 1;
+      if (!enabled) continue;
+      if (!r.token) continue;
+      const set = tokensByUser.get(r.user_id) || new Set();
+      set.add(r.token);
+      tokensByUser.set(r.user_id, set);
+    }
+
+    const title = 'Leaderboard Changed';
+    const body = `${meta.leader_name} is now leading "${meta.group_name}"`;
+
+    for (const [userId, tokenSet] of tokensByUser.entries()) {
+      const tokens = [...tokenSet];
+      if (!tokens.length) continue;
+
+      const allowed = await canSendNotification(userId, groupId, 'leader_changed');
+      if (!allowed) continue;
+
+      await sendPushNotification(tokens, title, body);
+    }
+  } catch (e) {
+    console.error('detectAndNotifyLeaderChange error:', e?.message || e);
   }
 }
 

@@ -210,13 +210,13 @@ exports.inviteByEmail = (req, res) => {
                     db.query(
                       "UPDATE group_invitations SET status='pending', invited_by_user_id=? WHERE group_id=? AND invited_user_id=?",
                       [invitedByUserId, groupId, invitedUser.id],
-                      async (err5) => {
+                      (err5) => {
                         if (err5)
                           return res
                             .status(500)
                             .json({ message: "DB error", error: err5 });
 
-                        res.json({
+                        return res.json({
                           message: `Invitation sent to ${invitedUser.name}.`,
                         });
                       },
@@ -240,31 +240,49 @@ created_at=NOW()
                     [groupId, invitedUser.id, invitedByUserId],
                     async (err5) => {
                       if (err5) {
-                        if (err5.code === "ER_DUP_ENTRY") {
-                          db.query(
-                            "UPDATE group_invitations SET status='pending', invited_by_user_id=? WHERE group_id=? AND invited_user_id=?",
-                            [invitedByUserId, groupId, invitedUser.id],
-                            (err6) => {
-                              if (err6)
-                                return res
-                                  .status(500)
-                                  .json({ message: "DB error", error: err6 });
-
-                              return res.json({
-                                message: `Invitation sent to ${invitedUser.name}.`,
-                              });
-                            },
-                          );
-
-                          return;
-                        }
-
                         return res
                           .status(500)
                           .json({ message: "DB error", error: err5 });
                       }
 
-                      res.json({
+                      // Notify the invited user (if they have device tokens)
+                      try {
+                        db.query(
+                          "SELECT name FROM users WHERE id = ? LIMIT 1",
+                          [invitedByUserId],
+                          (invErr, invRes) => {
+                            const inviterName =
+                              invErr || !invRes.length
+                                ? "Someone"
+                                : invRes[0].name;
+
+                            db.query(
+                              "SELECT token FROM device_tokens WHERE user_id = ?",
+                              [invitedUser.id],
+                              async (tErr, tRes) => {
+                                if (!tErr && tRes && tRes.length > 0) {
+                                  const tokens = [
+                                    ...new Set(
+                                      tRes.map((r) => r.token).filter(Boolean),
+                                    ),
+                                  ];
+                                  if (tokens.length > 0) {
+                                    await sendPushNotification(
+                                      tokens,
+                                      "Group Invitation",
+                                      `${inviterName} invited you to join "${group.name}"`,
+                                    );
+                                  }
+                                }
+                              },
+                            );
+                          },
+                        );
+                      } catch (e) {
+                        console.error("Invite push error:", e?.message || e);
+                      }
+
+                      return res.json({
                         message: `Invitation sent to ${invitedUser.name}.`,
                       });
                     },
@@ -421,16 +439,56 @@ exports.leaveGroup = (req, res) => {
   const groupId = req.params.id;
 
   db.query(
-    "DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
-    [groupId, userId],
-    (err, result) => {
-      if (err) return res.status(500).json({ message: "DB error", error: err });
-      if (result.affectedRows === 0) {
-        return res
-          .status(404)
-          .json({ message: "You are not a member of this group." });
-      }
-      res.json({ message: "Left the group successfully." });
+    `SELECT u.name AS leaver_name, g.name AS group_name FROM users u JOIN grp g WHERE u.id = ? AND g.id = ? LIMIT 1`,
+    [userId, groupId],
+    (metaErr, metaRes) => {
+      if (metaErr)
+        return res.status(500).json({ message: "DB error", error: metaErr });
+
+      const leaverName =
+        metaRes && metaRes.length ? metaRes[0].leaver_name : "A member";
+      const groupName =
+        metaRes && metaRes.length ? metaRes[0].group_name : "the group";
+
+      db.query(
+        "DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
+        [groupId, userId],
+        (err, result) => {
+          if (err)
+            return res.status(500).json({ message: "DB error", error: err });
+          if (result.affectedRows === 0) {
+            return res
+              .status(404)
+              .json({ message: "You are not a member of this group." });
+          }
+
+         
+          db.query(
+            `SELECT dt.token FROM group_members gm JOIN device_tokens dt ON dt.user_id = gm.user_id WHERE gm.group_id = ? AND gm.user_id != ?`,
+            [groupId, userId],
+            async (tErr, tRes) => {
+              if (!tErr && tRes && tRes.length > 0) {
+                const tokens = [
+                  ...new Set(tRes.map((r) => r.token).filter(Boolean)),
+                ];
+                if (tokens.length > 0) {
+                  try {
+                    await sendPushNotification(
+                      tokens,
+                      "Member Left Group",
+                      `${leaverName} left "${groupName}"`,
+                    );
+                  } catch (e) {
+                    console.error("Leave group push error:", e?.message || e);
+                  }
+                }
+              }
+            },
+          );
+
+          res.json({ message: "Left the group successfully." });
+        },
+      );
     },
   );
 };
@@ -510,7 +568,7 @@ exports.getGroupSettings = (req, res) => {
         group_goal_enabled: s.set_goal !== null && s.set_goal > 0,
         group_goal_steps: s.set_goal || null,
       });
-    }
+    },
   );
 };
 
@@ -528,7 +586,6 @@ exports.saveGroupSettings = (req, res) => {
   if (!group_id)
     return res.status(400).json({ message: "group_id is required" });
 
-  // set_goal = steps number if enabled, NULL if disabled
   const setGoalValue =
     group_goal_enabled && group_goal_steps && Number(group_goal_steps) > 0
       ? Number(group_goal_steps)
@@ -559,6 +616,6 @@ exports.saveGroupSettings = (req, res) => {
     (err) => {
       if (err) return res.status(500).json({ message: "DB error", error: err });
       res.json({ message: "Settings saved" });
-    }
+    },
   );
 };
