@@ -16,7 +16,9 @@ exports.sendNotification = async (req, res) => {
 
       try {
         // Use notification service to send (it handles dedupe)
-        const { sendPushNotification } = require("../services/notificationService");
+        const {
+          sendPushNotification,
+        } = require("../services/notificationService");
         await sendPushNotification(tokens, title, body);
         res.json({ message: "Notification sent successfully" });
       } catch (error) {
@@ -117,6 +119,51 @@ exports.saveToken = (req, res) => {
             }
           },
         );
+      }
+    },
+  );
+};
+
+exports.goalMilestone = (req, res) => {
+  const userId = req.user && req.user.id;
+  const { type } = req.body;
+
+  if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+  db.query(
+    "SELECT token FROM device_tokens WHERE user_id = ?",
+    [userId],
+    async (err, results) => {
+      if (err || results.length === 0) {
+        return res.status(404).json({ message: "Token not found" });
+      }
+
+      const tokens = [...new Set(results.map((r) => r.token).filter(Boolean))];
+
+      let title = "";
+      let body = "";
+
+      if (type === "half") {
+        title = "Half Goal Reached!";
+        body = "Great! You reached 50% of your step goal.";
+      }
+
+      if (type === "full") {
+        title = "Goal Completed!";
+        body = "Congratulations! You reached your daily step goal.";
+      }
+
+      try {
+        const {
+          sendPushNotification,
+        } = require("../services/notificationService");
+
+        await sendPushNotification(tokens, title, body, { type });
+
+        res.json({ message: "Goal notification sent" });
+      } catch (error) {
+        console.log("Goal notification error:", error.message || error);
+        res.status(500).json({ error: error.message || error });
       }
     },
   );
