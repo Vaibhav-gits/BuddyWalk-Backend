@@ -150,82 +150,95 @@ exports.inviteByEmail = (req, res) => {
   const cleanEmail = email.trim().toLowerCase();
 
   db.query(
-    "SELECT * FROM group_members WHERE group_id = ? AND user_id = ?",
-    [groupId, invitedByUserId],
-    (err, memberCheck) => {
-      if (err) return res.status(500).json({ message: "DB error", error: err });
-      if (memberCheck.length === 0) {
-        return res
-          .status(403)
-          .json({ message: "You are not a member of this group." });
-      }
+    "SELECT name FROM grp WHERE id = ? LIMIT 1",
+    [groupId],
+    (gErr, gRes) => {
+      if (gErr || !gRes.length)
+        return res.status(404).json({ message: "Group not found." });
+
+      const groupName = gRes[0].name;
 
       db.query(
-        "SELECT id, name, email FROM users WHERE email = ?",
-        [cleanEmail],
-        (err2, userResult) => {
-          if (err2)
-            return res.status(500).json({ message: "DB error", error: err2 });
-          if (userResult.length === 0) {
-            return res.status(404).json({
-              message:
-                "No account found with this email. They need to sign up first.",
-            });
+        "SELECT * FROM group_members WHERE group_id = ? AND user_id = ?",
+        [groupId, invitedByUserId],
+        (err, memberCheck) => {
+          if (err)
+            return res.status(500).json({ message: "DB error", error: err });
+          if (memberCheck.length === 0) {
+            return res
+              .status(403)
+              .json({ message: "You are not a member of this group." });
           }
 
-          const invitedUser = userResult[0];
-
           db.query(
-            "SELECT * FROM group_members WHERE group_id = ? AND user_id = ?",
-            [groupId, invitedUser.id],
-            (err3, alreadyMember) => {
-              if (err3)
+            "SELECT id, name, email FROM users WHERE email = ?",
+            [cleanEmail],
+            (err2, userResult) => {
+              if (err2)
                 return res
                   .status(500)
-                  .json({ message: "DB error", error: err3 });
-              if (alreadyMember.length > 0) {
-                return res
-                  .status(400)
-                  .json({ message: "This person is already in the group." });
+                  .json({ message: "DB error", error: err2 });
+              if (userResult.length === 0) {
+                return res.status(404).json({
+                  message:
+                    "No account found with this email. They need to sign up first.",
+                });
               }
 
+              const invitedUser = userResult[0];
+
               db.query(
-                "SELECT * FROM group_invitations WHERE group_id = ? AND invited_user_id = ?",
+                "SELECT * FROM group_members WHERE group_id = ? AND user_id = ?",
                 [groupId, invitedUser.id],
-                (err4, alreadyInvited) => {
-                  if (err4)
+                (err3, alreadyMember) => {
+                  if (err3)
                     return res
                       .status(500)
-                      .json({ message: "DB error", error: err4 });
-
-                  if (alreadyInvited.length > 0) {
-                    const existing = alreadyInvited[0];
-
-                    if (existing.status === "pending") {
-                      return res.status(400).json({
-                        message: "This person already has a pending invite.",
-                      });
-                    }
-
-                    db.query(
-                      "UPDATE group_invitations SET status='pending', invited_by_user_id=? WHERE group_id=? AND invited_user_id=?",
-                      [invitedByUserId, groupId, invitedUser.id],
-                      (err5) => {
-                        if (err5)
-                          return res
-                            .status(500)
-                            .json({ message: "DB error", error: err5 });
-
-                        return res.json({
-                          message: `Invitation sent to ${invitedUser.name}.`,
-                        });
-                      },
-                    );
-
-                    return;
+                      .json({ message: "DB error", error: err3 });
+                  if (alreadyMember.length > 0) {
+                    return res.status(400).json({
+                      message: "This person is already in the group.",
+                    });
                   }
 
-                  const query = `
+                  db.query(
+                    "SELECT * FROM group_invitations WHERE group_id = ? AND invited_user_id = ?",
+                    [groupId, invitedUser.id],
+                    (err4, alreadyInvited) => {
+                      if (err4)
+                        return res
+                          .status(500)
+                          .json({ message: "DB error", error: err4 });
+
+                      if (alreadyInvited.length > 0) {
+                        const existing = alreadyInvited[0];
+
+                        if (existing.status === "pending") {
+                          return res.status(400).json({
+                            message:
+                              "This person already has a pending invite.",
+                          });
+                        }
+
+                        db.query(
+                          "UPDATE group_invitations SET status='pending', invited_by_user_id=? WHERE group_id=? AND invited_user_id=?",
+                          [invitedByUserId, groupId, invitedUser.id],
+                          (err5) => {
+                            if (err5)
+                              return res
+                                .status(500)
+                                .json({ message: "DB error", error: err5 });
+
+                            return res.json({
+                              message: `Invitation sent to ${invitedUser.name}.`,
+                            });
+                          },
+                        );
+
+                        return;
+                      }
+
+                      const query = `
 INSERT INTO group_invitations
 (group_id, invited_user_id, invited_by_user_id, status)
 VALUES (?, ?, ?, 'pending')
@@ -235,56 +248,63 @@ invited_by_user_id=VALUES(invited_by_user_id),
 created_at=NOW()
 `;
 
-                  db.query(
-                    query,
-                    [groupId, invitedUser.id, invitedByUserId],
-                    async (err5) => {
-                      if (err5) {
-                        return res
-                          .status(500)
-                          .json({ message: "DB error", error: err5 });
-                      }
+                      db.query(
+                        query,
+                        [groupId, invitedUser.id, invitedByUserId],
+                        async (err5) => {
+                          if (err5) {
+                            return res
+                              .status(500)
+                              .json({ message: "DB error", error: err5 });
+                          }
 
-                      // Notify the invited user (if they have device tokens)
-                      try {
-                        db.query(
-                          "SELECT name FROM users WHERE id = ? LIMIT 1",
-                          [invitedByUserId],
-                          (invErr, invRes) => {
-                            const inviterName =
-                              invErr || !invRes.length
-                                ? "Someone"
-                                : invRes[0].name;
-
+                          try {
                             db.query(
-                              "SELECT token FROM device_tokens WHERE user_id = ?",
-                              [invitedUser.id],
-                              async (tErr, tRes) => {
-                                if (!tErr && tRes && tRes.length > 0) {
-                                  const tokens = [
-                                    ...new Set(
-                                      tRes.map((r) => r.token).filter(Boolean),
-                                    ),
-                                  ];
-                                  if (tokens.length > 0) {
-                                    await sendPushNotification(
-                                      tokens,
-                                      "Group Invitation",
-                                      `${inviterName} invited you to join "${group.name}"`,
-                                    );
-                                  }
-                                }
+                              "SELECT name FROM users WHERE id = ? LIMIT 1",
+                              [invitedByUserId],
+                              (invErr, invRes) => {
+                                const inviterName =
+                                  invErr || !invRes.length
+                                    ? "Someone"
+                                    : invRes[0].name;
+
+                                db.query(
+                                  "SELECT token FROM device_tokens WHERE user_id = ?",
+                                  [invitedUser.id],
+                                  async (tErr, tRes) => {
+                                    if (!tErr && tRes && tRes.length > 0) {
+                                      const tokens = [
+                                        ...new Set(
+                                          tRes
+                                            .map((r) => r.token)
+                                            .filter(Boolean),
+                                        ),
+                                      ];
+                                      if (tokens.length > 0) {
+                                       
+                                        await sendPushNotification(
+                                          tokens,
+                                          "Group Invitation",
+                                          `${inviterName} invited you to join "${groupName}"`, 
+                                        );
+                                      }
+                                    }
+                                  },
+                                );
                               },
                             );
-                          },
-                        );
-                      } catch (e) {
-                        console.error("Invite push error:", e?.message || e);
-                      }
+                          } catch (e) {
+                            console.error(
+                              "Invite push error:",
+                              e?.message || e,
+                            );
+                          }
 
-                      return res.json({
-                        message: `Invitation sent to ${invitedUser.name}.`,
-                      });
+                          return res.json({
+                            message: `Invitation sent to ${invitedUser.name}.`,
+                          });
+                        },
+                      );
                     },
                   );
                 },
@@ -462,7 +482,6 @@ exports.leaveGroup = (req, res) => {
               .json({ message: "You are not a member of this group." });
           }
 
-         
           db.query(
             `SELECT dt.token FROM group_members gm JOIN device_tokens dt ON dt.user_id = gm.user_id WHERE gm.group_id = ? AND gm.user_id != ?`,
             [groupId, userId],
