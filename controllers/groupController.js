@@ -139,6 +139,8 @@ exports.joinGroup = (req, res) => {
 };
 
 exports.inviteByEmail = (req, res) => {
+  console.log("👉 INVITE API CALLED");
+
   const invitedByUserId = req.user.id;
   const groupId = req.params.id;
   const { email } = req.body;
@@ -281,11 +283,10 @@ created_at=NOW()
                                         ),
                                       ];
                                       if (tokens.length > 0) {
-                                       
                                         await sendPushNotification(
                                           tokens,
                                           "Group Invitation",
-                                          `${inviterName} invited you to join "${groupName}"`, 
+                                          `${inviterName} invited you to join "${groupName}"`,
                                         );
                                       }
                                     }
@@ -635,6 +636,157 @@ exports.saveGroupSettings = (req, res) => {
     (err) => {
       if (err) return res.status(500).json({ message: "DB error", error: err });
       res.json({ message: "Settings saved" });
+    },
+  );
+};
+
+exports.deleteGroup = (req, res) => {
+  const userId = req.user.id;
+  const groupId = req.params.groupId;
+
+  db.query(
+    "SELECT id, name, created_by FROM grp WHERE id = ? LIMIT 1",
+    [groupId],
+    (err, result) => {
+      if (err) return res.status(500).json({ message: "DB error", error: err });
+      if (result.length === 0)
+        return res.status(404).json({ message: "Group not found." });
+
+      const group = result[0];
+      if (group.created_by !== userId) {
+        return res
+          .status(403)
+          .json({ message: "Only the group admin can delete this group." });
+      }
+
+      db.query(
+        "DELETE FROM group_notification_settings WHERE group_id = ?",
+        [groupId],
+        (err2) => {
+          if (err2)
+            return res.status(500).json({ message: "DB error", error: err2 });
+
+          db.query(
+            "DELETE FROM group_invitations WHERE group_id = ?",
+            [groupId],
+            (err3) => {
+              if (err3)
+                return res
+                  .status(500)
+                  .json({ message: "DB error", error: err3 });
+
+              db.query(
+                "DELETE FROM group_members WHERE group_id = ?",
+                [groupId],
+                (err4) => {
+                  if (err4)
+                    return res
+                      .status(500)
+                      .json({ message: "DB error", error: err4 });
+
+                  db.query(
+                    "DELETE FROM grp WHERE id = ?",
+                    [groupId],
+                    (err5) => {
+                      if (err5)
+                        return res
+                          .status(500)
+                          .json({ message: "DB error", error: err5 });
+
+                      res.json({
+                        message: `Group "${group.name}" deleted successfully.`,
+                      });
+                    },
+                  );
+                },
+              );
+            },
+          );
+        },
+      );
+    },
+  );
+};
+
+exports.renameGroup = (req, res) => {
+  const userId = req.user.id;
+  const groupId = req.params.groupId;
+  const { name } = req.body;
+
+  if (!name || !name.trim()) {
+    return res.status(400).json({ message: "Group name is required." });
+  }
+
+  db.query(
+    "SELECT id, created_by FROM grp WHERE id = ? LIMIT 1",
+    [groupId],
+    (err, result) => {
+      if (err) return res.status(500).json({ message: "DB error", error: err });
+      if (result.length === 0)
+        return res.status(404).json({ message: "Group not found." });
+
+      if (result[0].created_by !== userId) {
+        return res
+          .status(403)
+          .json({ message: "Only the group admin can rename this group." });
+      }
+
+      db.query(
+        "UPDATE grp SET name = ? WHERE id = ?",
+        [name.trim(), groupId],
+        (err2) => {
+          if (err2)
+            return res.status(500).json({ message: "DB error", error: err2 });
+
+          res.json({
+            message: "Group renamed successfully.",
+            name: name.trim(),
+          });
+        },
+      );
+    },
+  );
+};
+
+exports.removeMember = (req, res) => {
+  const requesterId = req.user.id;
+  const { groupId, userId } = req.params;
+
+  if (String(requesterId) === String(userId)) {
+    return res
+      .status(400)
+      .json({ message: "Use the leave group option to remove yourself." });
+  }
+
+  db.query(
+    "SELECT id, created_by FROM grp WHERE id = ? LIMIT 1",
+    [groupId],
+    (err, result) => {
+      if (err) return res.status(500).json({ message: "DB error", error: err });
+      if (result.length === 0)
+        return res.status(404).json({ message: "Group not found." });
+
+      if (result[0].created_by !== requesterId) {
+        return res
+          .status(403)
+          .json({ message: "Only the group admin can remove members." });
+      }
+
+      db.query(
+        "DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
+        [groupId, userId],
+        (err2, deleteResult) => {
+          if (err2)
+            return res.status(500).json({ message: "DB error", error: err2 });
+          if (deleteResult.affectedRows === 0) {
+            return res
+              .status(404)
+              .json({ message: "Member not found in this group." });
+          }
+
+          res.json({ message: "Member removed successfully." });
+        },
+      );
     },
   );
 };
