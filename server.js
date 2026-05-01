@@ -15,6 +15,8 @@ const {
 } = require("./controllers/authController");
 
 require("./cron/yesterdaySteps");
+require("./cron/randomMessages");
+ 
 
 const app = express();
 

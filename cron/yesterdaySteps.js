@@ -4,17 +4,9 @@ const { sendPushNotification } = require("../utils/sendPushNotification");
 const { canSendNotification } = require("../helpers/notificationLog");
 const moment = require("moment-timezone");
 
-const query = (sql, params) =>
-  new Promise((resolve, reject) => {
-    db.query(sql, params, (err, res) => {
-      if (err) reject(err);
-      else resolve(res);
-    });
-  });
-
 cron.schedule("*/10 * * * *", async () => {
   try {
-    const users = await query(
+    const [users] = await db.query(
       `SELECT DISTINCT u.id AS user_id, COALESCE(u.timezone, 'Asia/Kolkata') AS timezone
        FROM users u
        INNER JOIN device_tokens dt ON dt.user_id = u.id`,
@@ -39,7 +31,7 @@ cron.schedule("*/10 * * * *", async () => {
 
       const yesterday = userNow.clone().subtract(1, "day").format("YYYY-MM-DD");
 
-      const stepsRes = await query(
+      const [stepsRes] = await db.query(
         `SELECT step_count FROM steps WHERE user_id = ? AND step_date = ? LIMIT 1`,
         [userId, yesterday],
       );
@@ -57,7 +49,7 @@ cron.schedule("*/10 * * * *", async () => {
         message = `Amazing! You walked ${steps.toLocaleString()} steps yesterday. Goal smashed! 🏆`;
       }
 
-      const tokensRes = await query(
+      const [tokensRes] = await db.query(
         `SELECT token FROM device_tokens WHERE user_id = ?`,
         [userId],
       );
@@ -68,11 +60,11 @@ cron.schedule("*/10 * * * *", async () => {
       if (!tokens.length) continue;
 
       await sendPushNotification(tokens, "Yesterday's Steps 🚶", message, {
-        ttl: 24 * 60 * 60 * 1000, // 24 hours in ms
+        ttl: 24 * 60 * 60 * 1000,
       });
 
       console.log(
-        ` Sent to user ${userId} [${tz}] - ${steps} steps on ${yesterday}`,
+        `Sent to user ${userId} [${tz}] - ${steps} steps on ${yesterday}`,
       );
     }
   } catch (err) {
