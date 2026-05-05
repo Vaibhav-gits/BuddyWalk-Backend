@@ -133,29 +133,23 @@ const isWithinNotificationWindow = (timezone) => {
     return false;
   }
 };
-
 const hasAlreadySentToday = (userId, callback) => {
-  const today = moment.utc().startOf("day").format("YYYY-MM-DD HH:mm:ss");
+  const now   = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+  const end   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59));
+
+  const startStr = start.toISOString().slice(0, 19).replace('T', ' ');
+  const endStr   = end.toISOString().slice(0, 19).replace('T', ' ');
 
   db.query(
-    "SELECT COUNT(*) as count FROM user_messages WHERE user_id = ? AND sent_at >= ?",
-    [userId, today],
+    "SELECT COUNT(*) as count FROM user_messages WHERE user_id = ? AND sent_at >= ? AND sent_at <= ?",
+    [userId, startStr, endStr],
     (err, results) => {
-      if (err) {
-        console.error(
-          `❌ Error checking sent status for user ${userId}:`,
-          err.message,
-        );
-        callback(true);
-        return;
-      }
-
-      const alreadySent = results && results[0] && results[0].count > 0;
-      callback(alreadySent);
-    },
+      if (err) { callback(true); return; }
+      callback(results?.[0]?.count > 0);
+    }
   );
 };
-
 const insertMessageWithRetry = (userId, callback) => {
   let retryCount = 0;
   let callbackExecuted = false;
@@ -237,21 +231,17 @@ const processUser = (user, callback) => {
     return;
   }
 
-  // Check timezone window
   if (!isWithinNotificationWindow(user.timezone)) {
     callback();
     return;
   }
 
-  // Check if already sent today (idempotency)
   hasAlreadySentToday(user.id, (alreadySent) => {
     if (alreadySent) {
-      console.log(`⏭️ Already sent to ${user.email} today`);
       callback();
       return;
     }
 
-    // Try to insert message
     insertMessageWithRetry(user.id, (message) => {
       if (!message) {
         console.log(`⚠️ Failed to insert message for user ${user.id}`);
@@ -259,7 +249,6 @@ const processUser = (user, callback) => {
         return;
       }
 
-      // Send FCM notification
       sendFCMNotification(user, message, (success) => {
         callback();
       });
@@ -268,7 +257,6 @@ const processUser = (user, callback) => {
 };
 
 const processBatch = (users, index, stats, callback) => {
-  // Base case: all users processed
   if (index >= users.length) {
     callback(stats);
     return;
@@ -276,11 +264,9 @@ const processBatch = (users, index, stats, callback) => {
 
   const user = users[index];
 
-  // Process current user
   processUser(user, () => {
     stats.processed++;
 
-    // Move to next user
     processBatch(users, index + 1, stats, callback);
   });
 };
@@ -316,7 +302,6 @@ const fetchNextBatch = (callback) => {
 
 cron.schedule("*/2 * * * *", () => {
   if (!acquireLock()) {
-    console.log("⏸️ Previous cron run still in progress, skipping this run");
     return;
   }
 
@@ -334,7 +319,6 @@ cron.schedule("*/2 * * * *", () => {
         total: users.length,
       };
 
-      // Process users sequentially with callbacks
       processBatch(users, 0, stats, (finalStats) => {
         const endTime = new Date();
         const duration = endTime - startTime;
@@ -349,7 +333,7 @@ cron.schedule("*/2 * * * *", () => {
 });
 
 process.on("SIGTERM", () => {
-  const maxWait = 30000; // 30 second timeout
+  const maxWait = 30000;
   const startWait = Date.now();
 
   const checkAndExit = () => {

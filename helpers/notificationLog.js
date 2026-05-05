@@ -1,15 +1,17 @@
 const db = require("../config/db");
 
-async function canSendNotification(userId, groupId, type) {
+function canSendNotification(userId, groupId, type, callback) {
   const today = new Date().toISOString().slice(0, 10);
 
-  const [result] = await db.query(
+  db.query(
     `INSERT IGNORE INTO notification_log (user_id, group_id, notification_type, sent_date)
      VALUES (?, ?, ?, ?)`,
-    [userId, groupId, type, today]
+    [userId, groupId, type, today],
+    (err, result) => {
+      if (err) return callback(err, null);
+      callback(null, result.affectedRows === 1);
+    },
   );
-
-  return result.affectedRows === 1;
 }
 
 module.exports = { canSendNotification };

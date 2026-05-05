@@ -8,6 +8,7 @@ const stepRoutes = require("./routes/stepRoutes");
 const groupRoutes = require("./routes/groupRoutes");
 const challengeRoutes = require("./routes/challengeRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
+const godMessagesRoutes = require("./routes/Godmessagesroutes");
 const {
   deleteAccount,
   updateProfile,
@@ -16,7 +17,6 @@ const {
 
 require("./cron/yesterdaySteps");
 require("./cron/randomMessages");
- 
 
 const app = express();
 
@@ -32,6 +32,7 @@ app.use("/api/notifications", notificationRoutes);
 app.delete("/api/users/me", deleteAccount);
 app.put("/api/users/me", updateProfile);
 app.get("/api/users/me", getProfile);
+app.use("/api/god-messages", godMessagesRoutes);
 
 const PORT = process.env.PORT || 4000;
 

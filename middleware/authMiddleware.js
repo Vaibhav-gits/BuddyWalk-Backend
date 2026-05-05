@@ -9,8 +9,13 @@ module.exports = (req, res, next) => {
 
   const token = authHeader.split(" ")[1];
 
-  const cleanedToken = token && typeof token === 'string' ? token.trim() : token;
-  if (!cleanedToken || cleanedToken === "null" || cleanedToken === "undefined") {
+  const cleanedToken =
+    token && typeof token === "string" ? token.trim() : token;
+  if (
+    !cleanedToken ||
+    cleanedToken === "null" ||
+    cleanedToken === "undefined"
+  ) {
     return res.status(401).json({ message: "No token provided" });
   }
   try {
