@@ -20,6 +20,13 @@ const formatUser = (row) => ({
   photo_url: row.photo_url || null,
 });
 
+const verifyGoogleToken = (idToken, callback) => {
+  client
+    .verifyIdToken({ idToken, audience: process.env.GOOGLE_CLIENT_ID })
+    .then((ticket) => callback(null, ticket))
+    .catch((err) => callback(err));
+};
+
 const findOrCreateGoogleUser = (
   name,
   email,
@@ -105,62 +112,61 @@ exports.googleAuth = (req, res) => {
   if (!idToken)
     return res.status(400).json({ message: "ID token is required" });
 
-  client
-    .verifyIdToken({ idToken, audience: process.env.GOOGLE_CLIENT_ID })
-    .then((ticket) => {
-      const payload = ticket.getPayload();
-      const { name, email } = payload;
-      const photoUrl = photo_url || payload.picture || null;
-
-      let detectedCountry = "N/A";
-      try {
-        const parts = (payload.locale || "").split(/[-_]/);
-        const region = parts[1] || parts[0];
-        if (region && region.length === 2) {
-          try {
-            detectedCountry =
-              new Intl.DisplayNames(["en"], { type: "region" }).of(
-                region.toUpperCase(),
-              ) || "N/A";
-          } catch {
-            detectedCountry = region.toUpperCase();
-          }
-        }
-      } catch {
-        detectedCountry = "N/A";
-      }
-
-      if (!email)
-        return res
-          .status(400)
-          .json({ message: "Could not retrieve email from Google" });
-
-      findOrCreateGoogleUser(
-        name,
-        email,
-        detectedCountry,
-        timezone || "UTC",
-        photoUrl,
-        (err, user) => {
-          if (err) {
-            console.error("Google auth DB error:", err);
-            return res.status(500).json({ message: "Database error" });
-          }
-          const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET);
-          return res.json({
-            message: "Google sign-in successful",
-            token,
-            user: formatUser(user),
-          });
-        },
-      );
-    })
-    .catch((error) => {
-      console.error("Google auth error:", error);
+  verifyGoogleToken(idToken, (err, ticket) => {
+    if (err) {
+      console.error("Google auth error:", err);
       return res
         .status(401)
-        .json({ message: error?.message || "Invalid or expired Google token" });
-    });
+        .json({ message: err?.message || "Invalid or expired Google token" });
+    }
+
+    const payload = ticket.getPayload();
+    const { name, email } = payload;
+    const photoUrl = photo_url || payload.picture || null;
+
+    let detectedCountry = "N/A";
+    try {
+      const parts = (payload.locale || "").split(/[-_]/);
+      const region = parts[1] || parts[0];
+      if (region && region.length === 2) {
+        try {
+          detectedCountry =
+            new Intl.DisplayNames(["en"], { type: "region" }).of(
+              region.toUpperCase(),
+            ) || "N/A";
+        } catch {
+          detectedCountry = region.toUpperCase();
+        }
+      }
+    } catch {
+      detectedCountry = "N/A";
+    }
+
+    if (!email)
+      return res
+        .status(400)
+        .json({ message: "Could not retrieve email from Google" });
+
+    findOrCreateGoogleUser(
+      name,
+      email,
+      detectedCountry,
+      timezone || "UTC",
+      photoUrl,
+      (err, user) => {
+        if (err) {
+          console.error("Google auth DB error:", err);
+          return res.status(500).json({ message: "Database error" });
+        }
+        const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET);
+        return res.json({
+          message: "Google sign-in successful",
+          token,
+          user: formatUser(user),
+        });
+      },
+    );
+  });
 };
 
 exports.completeProfile = (req, res) => {

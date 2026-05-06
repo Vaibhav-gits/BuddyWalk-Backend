@@ -208,6 +208,12 @@ const sendFCMNotification = (user, message, callback) => {
         title: "G-O-D Message",
         body: message,
       },
+      // Extra data to let the mobile app know
+      // which screen to open on tap.
+      data: {
+        type: "GOD_MESSAGE",
+        screen: "God",
+      },
     })
     .then(() => {
       console.log(`✅ Sent to ${user.email} (ID: ${user.id}) - "${message}"`);

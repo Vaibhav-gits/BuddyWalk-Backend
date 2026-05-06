@@ -19,12 +19,13 @@ exports.sendNotification = (req, res) => {
 
       const tokens = [...new Set(results.map((r) => r.token).filter(Boolean))];
 
-      sendPushNotification(tokens, title, body)
-        .then(() => res.json({ message: "Notification sent successfully" }))
-        .catch((error) => {
+      sendPushNotification(tokens, title, body, (error) => {
+        if (error) {
           console.error("FCM send error:", error.message || error);
           return res.status(500).json({ error: error.message || error });
-        });
+        }
+        return res.json({ message: "Notification sent successfully" });
+      });
     },
   );
 };
@@ -153,12 +154,13 @@ exports.goalMilestone = (req, res) => {
         body = "Congratulations! You reached your daily step goal.";
       }
 
-      sendPushNotification(tokens, title, body, { type })
-        .then(() => res.json({ message: "Goal notification sent" }))
-        .catch((error) => {
+      sendPushNotification(tokens, title, body, { type }, (error) => {
+        if (error) {
           console.error("Goal notification error:", error.message || error);
           return res.status(500).json({ error: error.message || error });
-        });
+        }
+        return res.json({ message: "Goal notification sent" });
+      });
     },
   );
 };

@@ -115,17 +115,23 @@ function detectAndNotifyLeaderChange(oldMembers, newRanked, groupId, callback) {
             const tokens = [...tokenSet];
             if (!tokens.length) return next();
 
-            canSendNotification(userId, groupId, "leader_changed")
-              .then((allowed) => {
+            canSendNotification(
+              userId,
+              groupId,
+              "leader_changed",
+              (err3, allowed) => {
+                if (err3) {
+                  console.error("leader canSend error:", err3?.message);
+                  return next();
+                }
                 if (!allowed) return next();
-                sendPushNotification(tokens, title, body)
-                  .catch((e) => console.error("leader push error:", e?.message))
-                  .finally(next);
-              })
-              .catch((e) => {
-                console.error("leader canSend error:", e?.message);
-                next();
-              });
+
+                sendPushNotification(tokens, title, body, (e) => {
+                  if (e) console.error("leader push error:", e?.message);
+                  next();
+                });
+              },
+            );
           }
 
           next();
@@ -135,223 +141,216 @@ function detectAndNotifyLeaderChange(oldMembers, newRanked, groupId, callback) {
   );
 }
 
-function processOvertakeNotifications(groupId) {
-  return new Promise((resolve) => {
-    db.query(
-      `SELECT gm.user_id, gm.previous_rank, gm.current_rank,
-              gm.last_overtake_notified_at,
-              s.step_count AS steps, u.name,
-              gns.notify_overtake_me,
-              gns.notify_i_overtake
-       FROM group_members gm
-       JOIN users u ON u.id = gm.user_id
-       LEFT JOIN steps s ON s.user_id = gm.user_id AND s.step_date = CURDATE()
-       LEFT JOIN group_notification_settings gns
-         ON gns.user_id = gm.user_id AND gns.group_id = gm.group_id
-       WHERE gm.group_id = ?
-       ORDER BY COALESCE(s.step_count, 0) DESC`,
-      [groupId],
-      (err, members) => {
-        if (err) {
-          console.error("processOvertakeNotifications error:", err?.message);
-          return resolve();
-        }
-        if (!members.length) return resolve();
+function processOvertakeNotifications(groupId, callback) {
+  db.query(
+    `SELECT gm.user_id, gm.previous_rank, gm.current_rank,
+            gm.last_overtake_notified_at,
+            s.step_count AS steps, u.name,
+            gns.notify_overtake_me,
+            gns.notify_i_overtake
+     FROM group_members gm
+     JOIN users u ON u.id = gm.user_id
+     LEFT JOIN steps s ON s.user_id = gm.user_id AND s.step_date = CURDATE()
+     LEFT JOIN group_notification_settings gns
+       ON gns.user_id = gm.user_id AND gns.group_id = gm.group_id
+     WHERE gm.group_id = ?
+     ORDER BY COALESCE(s.step_count, 0) DESC`,
+    [groupId],
+    (err, members) => {
+      if (err) {
+        console.error("processOvertakeNotifications error:", err?.message);
+        return callback(err);
+      }
+      if (!members.length) return callback(null);
 
-        const newRanked = members.map((m, i) => ({
-          ...m,
-          newRank: i + 1,
-          steps: Number(m.steps || 0),
-        }));
+      const newRanked = members.map((m, i) => ({
+        ...m,
+        newRank: i + 1,
+        steps: Number(m.steps || 0),
+      }));
 
-        const overtakeEvents = [];
-        for (const member of newRanked) {
-          const prevRank = Number(member.previous_rank || 0);
-          const newRank = member.newRank;
-          if (prevRank > 0 && newRank < prevRank) {
-            for (const other of newRanked) {
-              const otherPrevRank = Number(other.previous_rank || 0);
-              if (
-                other.user_id !== member.user_id &&
-                otherPrevRank > 0 &&
-                otherPrevRank <= prevRank &&
-                other.newRank >= newRank
-              ) {
-                const stepDiff = member.steps - other.steps;
-                if (stepDiff >= STEP_GAP_THRESHOLD) {
-                  overtakeEvents.push({
-                    overtaker: member,
-                    overtaken: other,
-                    stepDiff,
-                  });
-                }
+      const overtakeEvents = [];
+      for (const member of newRanked) {
+        const prevRank = Number(member.previous_rank || 0);
+        const newRank = member.newRank;
+        if (prevRank > 0 && newRank < prevRank) {
+          for (const other of newRanked) {
+            const otherPrevRank = Number(other.previous_rank || 0);
+            if (
+              other.user_id !== member.user_id &&
+              otherPrevRank > 0 &&
+              otherPrevRank <= prevRank &&
+              other.newRank >= newRank
+            ) {
+              const stepDiff = member.steps - other.steps;
+              if (stepDiff >= STEP_GAP_THRESHOLD) {
+                overtakeEvents.push({
+                  overtaker: member,
+                  overtaken: other,
+                  stepDiff,
+                });
               }
             }
           }
         }
+      }
 
-        if (!overtakeEvents.length) {
-          return detectAndNotifyLeaderChange(
-            members,
-            newRanked,
-            groupId,
-            () => {
-              updateRanks(newRanked, groupId, resolve);
-            },
-          );
-        }
+      if (!overtakeEvents.length) {
+        return detectAndNotifyLeaderChange(members, newRanked, groupId, () => {
+          updateRanks(newRanked, groupId, () => callback(null));
+        });
+      }
 
-        const byOvertaken = {};
-        for (const event of overtakeEvents) {
-          const uid = event.overtaken.user_id;
-          if (!byOvertaken[uid]) byOvertaken[uid] = [];
-          byOvertaken[uid].push(event);
-        }
+      const byOvertaken = {};
+      for (const event of overtakeEvents) {
+        const uid = event.overtaken.user_id;
+        if (!byOvertaken[uid]) byOvertaken[uid] = [];
+        byOvertaken[uid].push(event);
+      }
 
-        const overtakenEntries = Object.entries(byOvertaken);
-        let oi = 0;
+      const byOvertaker = {};
+      for (const event of overtakeEvents) {
+        const uid = event.overtaker.user_id;
+        if (!byOvertaker[uid]) byOvertaker[uid] = [];
+        byOvertaker[uid].push(event);
+      }
 
-        function processOvertakenNext() {
-          if (oi >= overtakenEntries.length) return processOvertakerPhase();
-          const [userId, events] = overtakenEntries[oi++];
-          const overtakenUser = events[0].overtaken;
+      const overtakenEntries = Object.entries(byOvertaken);
+      const overtakerEntries = Object.entries(byOvertaker);
+      let oi = 0;
+      let ri = 0;
 
-          if (!overtakenUser.notify_overtake_me) return processOvertakenNext();
-          if (!isCooldownPassed(overtakenUser.last_overtake_notified_at))
-            return processOvertakenNext();
+      function processOvertakenNext() {
+        if (oi >= overtakenEntries.length) return processOvertakerPhase();
 
-          db.query(
-            "UPDATE group_members SET last_overtake_notified_at = NOW() WHERE user_id = ? AND group_id = ?",
-            [userId, groupId],
-            (err2) => {
-              if (err2) {
-                console.error("overtaken update error:", err2?.message);
-                return processOvertakenNext();
-              }
+        const [userId, events] = overtakenEntries[oi++];
+        const overtakenUser = events[0].overtaken;
 
-              const title = "You got overtaken!";
-              const body =
-                events.length === 1
-                  ? `${events[0].overtaker.name} overtook you by ${events[0].stepDiff} steps! Walk more to regain your rank.`
-                  : `${events.length} members overtook you! Time to walk more.`;
+        if (!overtakenUser.notify_overtake_me) return processOvertakenNext();
+        if (!isCooldownPassed(overtakenUser.last_overtake_notified_at))
+          return processOvertakenNext();
 
-              db.query(
-                "SELECT token FROM device_tokens WHERE user_id = ?",
-                [userId],
-                (err3, tokenRows) => {
-                  if (err3) {
-                    console.error("overtaken token error:", err3?.message);
-                    return processOvertakenNext();
-                  }
+        db.query(
+          "UPDATE group_members SET last_overtake_notified_at = NOW() WHERE user_id = ? AND group_id = ?",
+          [userId, groupId],
+          (err2) => {
+            if (err2) {
+              console.error("overtaken update error:", err2?.message);
+              return processOvertakenNext();
+            }
 
-                  const tokens = [
-                    ...new Set(tokenRows.map((r) => r.token).filter(Boolean)),
-                  ];
-                  if (!tokens.length) {
+            const title = "You got overtaken!";
+            const body =
+              events.length === 1
+                ? `${events[0].overtaker.name} overtook you by ${events[0].stepDiff} steps! Walk more to regain your rank.`
+                : `${events.length} members overtook you! Time to walk more.`;
+
+            db.query(
+              "SELECT token FROM device_tokens WHERE user_id = ?",
+              [userId],
+              (err3, tokenRows) => {
+                if (err3) {
+                  console.error("overtaken token error:", err3?.message);
+                  return processOvertakenNext();
+                }
+
+                const tokens = [
+                  ...new Set(tokenRows.map((r) => r.token).filter(Boolean)),
+                ];
+
+                if (!tokens.length) {
+                  logNotification(
+                    userId,
+                    groupId,
+                    "overtake_received",
+                    events[0],
+                  );
+                  return processOvertakenNext();
+                }
+
+                sendPushNotification(tokens, title, body, (e) => {
+                  if (e) {
+                    console.error("overtaken push error:", e?.message);
+                  } else {
                     logNotification(
                       userId,
                       groupId,
                       "overtake_received",
                       events[0],
                     );
-                    return processOvertakenNext();
                   }
-
-                  sendPushNotification(tokens, title, body)
-                    .then(() => {
-                      logNotification(
-                        userId,
-                        groupId,
-                        "overtake_received",
-                        events[0],
-                      );
-                    })
-                    .catch((e) =>
-                      console.error("overtaken push error:", e?.message),
-                    )
-                    .finally(processOvertakenNext);
-                },
-              );
-            },
-          );
-        }
-
-        const byOvertaker = {};
-        for (const event of overtakeEvents) {
-          const uid = event.overtaker.user_id;
-          if (!byOvertaker[uid]) byOvertaker[uid] = [];
-          byOvertaker[uid].push(event);
-        }
-
-        const overtakerEntries = Object.entries(byOvertaker);
-        let ri = 0;
-
-        function processOvertakerPhase() {
-          if (ri >= overtakerEntries.length) {
-            return detectAndNotifyLeaderChange(
-              members,
-              newRanked,
-              groupId,
-              () => {
-                updateRanks(newRanked, groupId, resolve);
+                  processOvertakenNext();
+                });
               },
             );
-          }
+          },
+        );
+      }
 
-          const [userId, events] = overtakerEntries[ri++];
-          const overtakerUser = events[0].overtaker;
-
-          if (!overtakerUser.notify_i_overtake) return processOvertakerPhase();
-          if (!isCooldownPassed(overtakerUser.last_overtake_notified_at))
-            return processOvertakerPhase();
-
-          db.query(
-            "UPDATE group_members SET last_overtake_notified_at = NOW() WHERE user_id = ? AND group_id = ?",
-            [userId, groupId],
-            (err2) => {
-              if (err2) {
-                console.error("overtaker update error:", err2?.message);
-                return processOvertakerPhase();
-              }
-
-              const title =
-                events.length === 1
-                  ? "You overtook someone!"
-                  : "You are on fire!";
-              const body =
-                events.length === 1
-                  ? `You overtook ${events[0].overtaken.name} by ${events[0].stepDiff} steps! Keep going!`
-                  : `You overtook ${events.length} members! Keep walking!`;
-
-              db.query(
-                "SELECT token FROM device_tokens WHERE user_id = ?",
-                [userId],
-                (err3, tokenRows) => {
-                  if (err3) {
-                    console.error("overtaker token error:", err3?.message);
-                    return processOvertakerPhase();
-                  }
-
-                  const tokens = [
-                    ...new Set(tokenRows.map((r) => r.token).filter(Boolean)),
-                  ];
-                  if (!tokens.length) return processOvertakerPhase();
-
-                  sendPushNotification(tokens, title, body)
-                    .catch((e) =>
-                      console.error("overtaker push error:", e?.message),
-                    )
-                    .finally(processOvertakerPhase);
-                },
-              );
+      function processOvertakerPhase() {
+        if (ri >= overtakerEntries.length) {
+          return detectAndNotifyLeaderChange(
+            members,
+            newRanked,
+            groupId,
+            () => {
+              updateRanks(newRanked, groupId, () => callback(null));
             },
           );
         }
 
-        processOvertakenNext();
-      },
-    );
-  });
+        const [userId, events] = overtakerEntries[ri++];
+        const overtakerUser = events[0].overtaker;
+
+        if (!overtakerUser.notify_i_overtake) return processOvertakerPhase();
+        if (!isCooldownPassed(overtakerUser.last_overtake_notified_at))
+          return processOvertakerPhase();
+
+        db.query(
+          "UPDATE group_members SET last_overtake_notified_at = NOW() WHERE user_id = ? AND group_id = ?",
+          [userId, groupId],
+          (err2) => {
+            if (err2) {
+              console.error("overtaker update error:", err2?.message);
+              return processOvertakerPhase();
+            }
+
+            const title =
+              events.length === 1
+                ? "You overtook someone!"
+                : "You are on fire!";
+            const body =
+              events.length === 1
+                ? `You overtook ${events[0].overtaken.name} by ${events[0].stepDiff} steps! Keep going!`
+                : `You overtook ${events.length} members! Keep walking!`;
+
+            db.query(
+              "SELECT token FROM device_tokens WHERE user_id = ?",
+              [userId],
+              (err3, tokenRows) => {
+                if (err3) {
+                  console.error("overtaker token error:", err3?.message);
+                  return processOvertakerPhase();
+                }
+
+                const tokens = [
+                  ...new Set(tokenRows.map((r) => r.token).filter(Boolean)),
+                ];
+                if (!tokens.length) return processOvertakerPhase();
+
+                sendPushNotification(tokens, title, body, (e) => {
+                  if (e) console.error("overtaker push error:", e?.message);
+                  processOvertakerPhase();
+                });
+              },
+            );
+          },
+        );
+      }
+
+      processOvertakenNext();
+    },
+  );
 }
 
 module.exports = { processOvertakeNotifications };

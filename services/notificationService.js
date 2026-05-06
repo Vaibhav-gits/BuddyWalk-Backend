@@ -24,26 +24,42 @@ function shouldSend(token, title, body) {
   }
 }
 
-async function sendPushNotification(tokenOrTokens, title, body, data = {}) {
-  const tokens = Array.isArray(tokenOrTokens) ? tokenOrTokens : [tokenOrTokens];
+function sendPushNotification(
+  tokenOrTokens,
+  title,
+  body,
+  dataOrCallback,
+  callback,
+) {
+  let data = {};
+  let cb = callback;
 
+  if (typeof dataOrCallback === "function") {
+    cb = dataOrCallback;
+  } else {
+    data = dataOrCallback || {};
+  }
+
+  const tokens = Array.isArray(tokenOrTokens) ? tokenOrTokens : [tokenOrTokens];
   const uniqueTokens = [...new Set(tokens.filter((t) => !!t))];
 
   const results = [];
+  let i = 0;
 
-  for (const token of uniqueTokens) {
+  function next() {
+    if (i >= uniqueTokens.length) return cb(null, results);
+
+    const token = uniqueTokens[i++];
+
     if (!shouldSend(token, title, body)) {
       results.push({ token, skipped: true });
-      continue;
+      return next();
     }
 
     const message = {
-      token: token,
-      notification: {
-        title: title,
-        body: body,
-      },
-      data: data,
+      token,
+      notification: { title, body },
+      data,
       android: {
         notification: {
           channelId: "default",
@@ -51,22 +67,26 @@ async function sendPushNotification(tokenOrTokens, title, body, data = {}) {
         },
       },
     };
-    try {
-      const response = await admin.messaging().send(message);
-      results.push({ token, response });
-    } catch (error) {
-      console.error(
-        "Notification error for token",
-        token,
-        error.message || error,
-      );
-      results.push({ token, error: error.message || error });
-    }
+
+    admin
+      .messaging()
+      .send(message)
+      .then((response) => {
+        results.push({ token, response });
+        next();
+      })
+      .catch((error) => {
+        console.error(
+          "Notification error for token",
+          token,
+          error.message || error,
+        );
+        results.push({ token, error: error.message || error });
+        next();
+      });
   }
 
-  return results;
+  next();
 }
 
-module.exports = {
-  sendPushNotification,
-};
+module.exports = { sendPushNotification };

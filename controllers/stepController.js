@@ -68,32 +68,38 @@ function checkStepGoalMilestone(userId, oldCount, newCount) {
     if (oldCount >= milestone.steps || newCount < milestone.steps)
       return next();
 
-    canSendNotification(userId, 0, milestone.type)
-      .then((shouldSend) => {
-        if (!shouldSend) return next();
+    canSendNotification(userId, 0, milestone.type, (err, shouldSend) => {
+      if (err || !shouldSend) return next();
 
-        db.query(
-          "SELECT token FROM device_tokens WHERE user_id = ?",
-          [userId],
-          (err, results) => {
-            if (err) {
-              console.error("milestone token error:", err);
-              return next();
-            }
-            const tokens = [
-              ...new Set(results.map((r) => r.token).filter(Boolean)),
-            ];
-            if (!tokens.length) return next();
-            sendPushNotification(tokens, milestone.title, milestone.body)
-              .catch(console.error)
-              .finally(next);
-          },
-        );
-      })
-      .catch((err) => {
-        console.error("milestone canSend error:", err);
-        next();
-      });
+      db.query(
+        "SELECT token FROM device_tokens WHERE user_id = ?",
+        [userId],
+        (err2, results) => {
+          if (err2) {
+            console.error("milestone token error:", err2);
+            return next();
+          }
+          const tokens = [
+            ...new Set(results.map((r) => r.token).filter(Boolean)),
+          ];
+          if (!tokens.length) return next();
+
+          sendPushNotification(
+            tokens,
+            milestone.title,
+            milestone.body,
+            (notifErr) => {
+              if (notifErr)
+                console.error(
+                  "milestone push error:",
+                  notifErr?.message || notifErr,
+                );
+              next();
+            },
+          );
+        },
+      );
+    });
   }
 
   next();
@@ -145,22 +151,29 @@ function checkAndNotifyOvertake(userId, newStepCount, today) {
         const tokens = [...tokensSet];
         if (!tokens.length) return next();
 
-        canSendNotification(memberId, 0, `overtaken_by_${userId}`)
-          .then((shouldSend) => {
-            if (!shouldSend) return next();
+        canSendNotification(
+          memberId,
+          0,
+          `overtaken_by_${userId}`,
+          (err2, shouldSend) => {
+            if (err2 || !shouldSend) return next();
+
             const memberData = results.find((r) => r.member_id === memberId);
             sendPushNotification(
               tokens,
               "You've been overtaken!",
               `${memberData.my_name} just passed you with ${newStepCount.toLocaleString()} steps today!`,
-            )
-              .catch(console.error)
-              .finally(next);
-          })
-          .catch((err) => {
-            console.error("overtake canSend error:", err);
-            next();
-          });
+              (notifErr) => {
+                if (notifErr)
+                  console.error(
+                    "overtake push error:",
+                    notifErr?.message || notifErr,
+                  );
+                next();
+              },
+            );
+          },
+        );
       }
 
       next();
@@ -178,9 +191,9 @@ exports.saveSteps = (req, res) => {
     db.query(
       "SELECT id, step_count FROM steps WHERE user_id=? AND step_date=? LIMIT 1",
       [userId, today],
-      (err, findRes) => {
-        if (err) {
-          console.error("saveSteps find error:", err);
+      (err2, findRes) => {
+        if (err2) {
+          console.error("saveSteps find error:", err2);
           return res.status(500).json({ message: "Server error" });
         }
 
@@ -198,7 +211,13 @@ exports.saveSteps = (req, res) => {
             (e, groups) => {
               if (!e && groups.length) {
                 groups.forEach((g) => {
-                  processOvertakeNotifications(g.group_id).catch(console.error);
+                  processOvertakeNotifications(g.group_id, (overtakeErr) => {
+                    if (overtakeErr)
+                      console.error(
+                        "processOvertakeNotifications error:",
+                        overtakeErr?.message || overtakeErr,
+                      );
+                  });
                 });
               }
             },
@@ -211,9 +230,9 @@ exports.saveSteps = (req, res) => {
           db.query(
             "UPDATE steps SET step_count=? WHERE id=?",
             [stepsNum, findRes[0].id],
-            (err2) => {
-              if (err2) {
-                console.error("saveSteps update error:", err2);
+            (err3) => {
+              if (err3) {
+                console.error("saveSteps update error:", err3);
                 return res.status(500).json({ message: "Server error" });
               }
               afterSave("Steps updated");
@@ -223,9 +242,9 @@ exports.saveSteps = (req, res) => {
           db.query(
             "INSERT INTO steps (user_id, step_count, step_date) VALUES (?, ?, ?)",
             [userId, stepsNum, today],
-            (err2) => {
-              if (err2) {
-                console.error("saveSteps insert error:", err2);
+            (err3) => {
+              if (err3) {
+                console.error("saveSteps insert error:", err3);
                 return res.status(500).json({ message: "Server error" });
               }
               afterSave("Steps saved");

@@ -3,7 +3,8 @@ const moment = require("moment-timezone");
 const { sendPushNotification } = require("../utils/sendPushNotification");
 
 function generateInviteCode() {
-  return "GRP-" + Math.random().toString(36).substring(2, 8).toUpperCase();
+  // generate a short uppercase alphanumeric code (no 'GRP-' prefix)
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
 exports.createGroup = (req, res) => {
@@ -48,16 +49,18 @@ exports.createGroup = (req, res) => {
 
 exports.joinGroup = (req, res) => {
   const userId = req.user.id;
-  const invite_code = (req.body.code || req.body.invite_code || "")
-    .trim()
-    .toUpperCase();
+  const raw = (req.body.code || req.body.invite_code || "").trim().toUpperCase();
+  const cleaned = raw.replace(/[^A-Z0-9]/g, "").replace(/^GRP/, "");
 
-  if (!invite_code)
+  if (!cleaned)
     return res.status(400).json({ message: "Invite code is required." });
 
+  // try matching both stored forms: with or without GRP- prefix
+  const candidates = [cleaned, `GRP-${cleaned}`];
+
   db.query(
-    "SELECT * FROM grp WHERE invite_code = ?",
-    [invite_code],
+    "SELECT * FROM grp WHERE invite_code IN (?)",
+    [candidates],
     (err, result) => {
       if (err) return res.status(500).json({ message: "DB error", error: err });
       if (!result.length)
@@ -87,13 +90,13 @@ exports.joinGroup = (req, res) => {
                   .status(500)
                   .json({ message: "DB error", error: err3 });
 
-              // Send push notification (fire and forget)
+              // Fire and forget push notification
               db.query(
                 `SELECT u.name AS joiner_name, dt.token AS creator_token
-               FROM users u
-               JOIN grp g ON g.id = ?
-               LEFT JOIN device_tokens dt ON dt.user_id = g.created_by
-               WHERE u.id = ?`,
+                 FROM users u
+                 JOIN grp g ON g.id = ?
+                 LEFT JOIN device_tokens dt ON dt.user_id = g.created_by
+                 WHERE u.id = ?`,
                 [group.id, userId],
                 (err4, notifData) => {
                   if (!err4 && notifData.length > 0) {
@@ -107,18 +110,27 @@ exports.joinGroup = (req, res) => {
                         tokens,
                         "New Group Member!",
                         `${notifData[0].joiner_name} joined your group "${group.name}"`,
-                      ).catch(console.error);
+                        (notifErr) => {
+                          if (notifErr)
+                            console.error(
+                              "joinGroup push error:",
+                              notifErr?.message || notifErr,
+                            );
+                        },
+                      );
                     }
                   }
                 },
               );
 
+              // normalize invite_code in response (remove GRP- if present)
+              const respCode = (group.invite_code || '').replace(/^GRP-?/, '');
               return res.json({
                 message: "Joined group successfully",
                 group: {
                   id: group.id,
                   name: group.name,
-                  invite_code: group.invite_code,
+                  invite_code: respCode,
                 },
               });
             },
@@ -207,6 +219,7 @@ exports.inviteByEmail = (req, res) => {
                             const inviterName = invRes.length
                               ? invRes[0].name
                               : "Someone";
+
                             db.query(
                               "SELECT token FROM device_tokens WHERE user_id = ?",
                               [invitedUser.id],
@@ -222,11 +235,13 @@ exports.inviteByEmail = (req, res) => {
                                     tokens,
                                     "Group Invitation",
                                     `${inviterName} invited you to join "${groupName}"`,
-                                  ).catch((e3) =>
-                                    console.error(
-                                      "Invite push error:",
-                                      e3?.message || e3,
-                                    ),
+                                    (e3) => {
+                                      if (e3)
+                                        console.error(
+                                          "Invite push error:",
+                                          e3?.message || e3,
+                                        );
+                                    },
                                   );
                                 }
                               },
@@ -259,8 +274,8 @@ exports.inviteByEmail = (req, res) => {
                       } else {
                         db.query(
                           `INSERT INTO group_invitations (group_id, invited_user_id, invited_by_user_id, status)
-                         VALUES (?, ?, ?, 'pending')
-                         ON DUPLICATE KEY UPDATE status='pending', invited_by_user_id=VALUES(invited_by_user_id), created_at=NOW()`,
+                           VALUES (?, ?, ?, 'pending')
+                           ON DUPLICATE KEY UPDATE status='pending', invited_by_user_id=VALUES(invited_by_user_id), created_at=NOW()`,
                           [groupId, invitedUser.id, invitedByUserId],
                           (e) => {
                             if (e)
@@ -304,7 +319,12 @@ exports.getMyInvitations = (req, res) => {
         console.error("getMyInvitations error:", err);
         return res.status(500).json({ message: "DB error", error: err });
       }
-      return res.json({ invitations: result });
+      // normalize invite codes in invitations (strip GRP- prefix if present)
+      const normalized = result.map((r) => ({
+        ...r,
+        invite_code: (r.invite_code || '').replace(/^GRP-?/, ''),
+      }));
+      return res.json({ invitations: normalized });
     },
   );
 };
@@ -359,6 +379,7 @@ exports.acceptInvitation = (req, res) => {
                       .status(500)
                       .json({ message: "DB error", error: err4 });
 
+                  // Fire and forget push notification
                   db.query(
                     `SELECT u.name AS accepter_name, g.name AS group_name, dt.token AS inviter_token
                      FROM users u
@@ -384,7 +405,14 @@ exports.acceptInvitation = (req, res) => {
                             tokens,
                             "Invitation Accepted! 🎉",
                             `${notifData[0].accepter_name} accepted your invite to "${notifData[0].group_name}"`,
-                          ).catch(console.error);
+                            (notifErr) => {
+                              if (notifErr)
+                                console.error(
+                                  "acceptInvitation push error:",
+                                  notifErr?.message || notifErr,
+                                );
+                            },
+                          );
                         }
                       }
                     },
@@ -450,6 +478,7 @@ exports.leaveGroup = (req, res) => {
               .status(404)
               .json({ message: "You are not a member of this group." });
 
+          // Fire and forget push notification
           db.query(
             `SELECT dt.token FROM group_members gm
              JOIN device_tokens dt ON dt.user_id = gm.user_id
@@ -465,8 +494,13 @@ exports.leaveGroup = (req, res) => {
                     tokens,
                     "Member Left Group",
                     `${leaverName} left "${groupName}"`,
-                  ).catch((e2) =>
-                    console.error("Leave group push error:", e2?.message || e2),
+                    (e2) => {
+                      if (e2)
+                        console.error(
+                          "Leave group push error:",
+                          e2?.message || e2,
+                        );
+                    },
                   );
                 }
               }
@@ -495,7 +529,11 @@ exports.getUserGroups = (req, res) => {
         console.error("getUserGroups error:", err);
         return res.status(500).json({ message: "DB error", error: err });
       }
-      return res.json({ groups: result });
+      const normalized = result.map((g) => ({
+        ...g,
+        invite_code: (g.invite_code || '').replace(/^GRP-?/, ''),
+      }));
+      return res.json({ groups: normalized });
     },
   );
 };
