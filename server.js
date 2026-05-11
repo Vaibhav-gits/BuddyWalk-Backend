@@ -15,6 +15,8 @@ const {
   getProfile,
 } = require("./controllers/authController");
 
+const achievementRoutes = require("./routes/achievementRoutes");
+
 require("./cron/yesterdaySteps");
 require("./cron/randomMessages");
 
@@ -33,6 +35,7 @@ app.delete("/api/users/me", deleteAccount);
 app.put("/api/users/me", updateProfile);
 app.get("/api/users/me", getProfile);
 app.use("/api/god-messages", godMessagesRoutes);
+app.use("/api/achievements", achievementRoutes);
 
 const PORT = process.env.PORT || 4000;
 

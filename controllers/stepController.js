@@ -5,6 +5,7 @@ const { canSendNotification } = require("../helpers/notificationLog");
 const {
   processOvertakeNotifications,
 } = require("../utils/overtakeNotification");
+const { processDailyAchievements } = require("./achievementController");
 
 function getTodayInTimezone(tz) {
   try {
@@ -198,6 +199,18 @@ exports.saveSteps = (req, res) => {
         }
 
         const afterSave = (message) => {
+          db.query(
+            "SELECT goal_steps FROM users WHERE id=? LIMIT 1",
+            [userId],
+            (gErr, gRes) => {
+              const dailyGoal =
+                gRes && gRes.length
+                  ? Number(gRes[0].goal_steps) || 10000
+                  : 10000;
+
+              processDailyAchievements(userId, stepsNum, today, dailyGoal);
+            },
+          );
           checkStepGoalMilestone(
             userId,
             findRes.length ? findRes[0].step_count : 0,
@@ -309,6 +322,35 @@ exports.getWeeklySteps = (req, res) => {
         daily: week,
         today_steps: todaySteps,
         debug: { timezone: tz, today, weekStart },
+      });
+    },
+  );
+};
+exports.getMonthlySteps = (req, res) => {
+  const userId = req.user.id;
+
+  const now = moment();
+  const start = now.clone().startOf("month").format("YYYY-MM-DD");
+  const end = now.clone().endOf("month").format("YYYY-MM-DD");
+
+  db.query(
+    `
+    SELECT SUM(step_count) as total
+    FROM steps
+    WHERE user_id=? 
+    AND step_date BETWEEN ? AND ?
+  `,
+    [userId, start, end],
+    (err, result) => {
+      if (err) {
+        console.log(err);
+        return res.status(500).json({
+          message: "Server error",
+        });
+      }
+
+      return res.json({
+        total: Number(result[0]?.total || 0),
       });
     },
   );
