@@ -2,7 +2,7 @@ const db = require("../config/db");
 const moment = require("moment-timezone");
 
 const MILESTONES = [
-  { type: "3k", threshold: 3000 },
+  { type: "5k", threshold: 5000 },
   { type: "7k", threshold: 7000 },
   { type: "10k", threshold: 10000 },
   { type: "15k", threshold: 15000 },
@@ -22,12 +22,7 @@ function getHighestMilestone(steps) {
   return matched;
 }
 
-exports.processDailyAchievements = (
-  userId,
-  stepCount,
-  stepDate,
-  dailyGoal,
-) => {
+exports.processDailyAchievements = (userId, stepCount, stepDate, dailyGoal) => {
   const highest = getHighestMilestone(stepCount);
 
   if (highest) {
@@ -75,7 +70,7 @@ exports.getAchievementsSummary = (req, res) => {
       const data = {
         goalsCompleted: 0,
         milestones: {
-          "3k": 0,
+          "5k": 0,
           "7k": 0,
           "10k": 0,
           "15k": 0,

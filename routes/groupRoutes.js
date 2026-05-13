@@ -28,4 +28,10 @@ router.delete("/:groupId/members/:userId", auth, groupController.removeMember);
 
 router.delete("/:groupId", auth, groupController.deleteGroup);
 
+router.post(
+  "/:groupId/poke/:targetUserId",
+  auth,
+  groupController.pokeGroupMember,
+);
+
 module.exports = router;

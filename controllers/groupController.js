@@ -3,7 +3,7 @@ const moment = require("moment-timezone");
 const { sendPushNotification } = require("../utils/sendPushNotification");
 
 function generateInviteCode() {
-  // generate a short uppercase alphanumeric code (no 'GRP-' prefix)
+
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
@@ -49,13 +49,15 @@ exports.createGroup = (req, res) => {
 
 exports.joinGroup = (req, res) => {
   const userId = req.user.id;
-  const raw = (req.body.code || req.body.invite_code || "").trim().toUpperCase();
+  const raw = (req.body.code || req.body.invite_code || "")
+    .trim()
+    .toUpperCase();
   const cleaned = raw.replace(/[^A-Z0-9]/g, "").replace(/^GRP/, "");
 
   if (!cleaned)
     return res.status(400).json({ message: "Invite code is required." });
 
-  // try matching both stored forms: with or without GRP- prefix
+
   const candidates = [cleaned, `GRP-${cleaned}`];
 
   db.query(
@@ -90,7 +92,7 @@ exports.joinGroup = (req, res) => {
                   .status(500)
                   .json({ message: "DB error", error: err3 });
 
-              // Fire and forget push notification
+      
               db.query(
                 `SELECT u.name AS joiner_name, dt.token AS creator_token
                  FROM users u
@@ -123,8 +125,8 @@ exports.joinGroup = (req, res) => {
                 },
               );
 
-              // normalize invite_code in response (remove GRP- if present)
-              const respCode = (group.invite_code || '').replace(/^GRP-?/, '');
+           
+              const respCode = (group.invite_code || "").replace(/^GRP-?/, "");
               return res.json({
                 message: "Joined group successfully",
                 group: {
@@ -319,10 +321,10 @@ exports.getMyInvitations = (req, res) => {
         console.error("getMyInvitations error:", err);
         return res.status(500).json({ message: "DB error", error: err });
       }
-      // normalize invite codes in invitations (strip GRP- prefix if present)
+  
       const normalized = result.map((r) => ({
         ...r,
-        invite_code: (r.invite_code || '').replace(/^GRP-?/, ''),
+        invite_code: (r.invite_code || "").replace(/^GRP-?/, ""),
       }));
       return res.json({ invitations: normalized });
     },
@@ -379,7 +381,7 @@ exports.acceptInvitation = (req, res) => {
                       .status(500)
                       .json({ message: "DB error", error: err4 });
 
-                  // Fire and forget push notification
+            
                   db.query(
                     `SELECT u.name AS accepter_name, g.name AS group_name, dt.token AS inviter_token
                      FROM users u
@@ -478,7 +480,7 @@ exports.leaveGroup = (req, res) => {
               .status(404)
               .json({ message: "You are not a member of this group." });
 
-          // Fire and forget push notification
+     
           db.query(
             `SELECT dt.token FROM group_members gm
              JOIN device_tokens dt ON dt.user_id = gm.user_id
@@ -531,7 +533,7 @@ exports.getUserGroups = (req, res) => {
       }
       const normalized = result.map((g) => ({
         ...g,
-        invite_code: (g.invite_code || '').replace(/^GRP-?/, ''),
+        invite_code: (g.invite_code || "").replace(/^GRP-?/, ""),
       }));
       return res.json({ groups: normalized });
     },
@@ -778,6 +780,50 @@ exports.removeMember = (req, res) => {
           return res.json({ message: "Member removed successfully." });
         },
       );
+    },
+  );
+};
+
+exports.pokeGroupMember = (req, res) => {
+  const pokerId = req.user.id;
+  const { groupId, targetUserId } = req.params;
+
+  if (String(pokerId) === String(targetUserId)) {
+    return res.status(400).json({ message: "You can't poke yourself." });
+  }
+
+  db.query(
+    `SELECT
+       u.name        AS poker_name,
+       g.name        AS group_name,
+       dt.token      AS device_token
+     FROM users u
+     JOIN grp g ON g.id = ?
+     LEFT JOIN device_tokens dt ON dt.user_id = ?
+     WHERE u.id = ?`,
+    [groupId, targetUserId, pokerId],
+    (err, rows) => {
+      if (err) return res.status(500).json({ message: "DB error", error: err });
+      if (!rows.length) return res.status(404).json({ message: "Not found." });
+
+      const { poker_name, group_name } = rows[0];
+      const tokens = [
+        ...new Set(rows.map((r) => r.device_token).filter(Boolean)),
+      ];
+
+      if (tokens.length > 0) {
+        sendPushNotification(
+          tokens,
+          "👋 You got poked!",
+          `${poker_name} poked you in "${group_name}" — go get those steps in!`,
+          (notifErr) => {
+            if (notifErr)
+              console.error("poke push error:", notifErr?.message || notifErr);
+          },
+        );
+      }
+
+      return res.json({ message: "Poke sent!" });
     },
   );
 };
